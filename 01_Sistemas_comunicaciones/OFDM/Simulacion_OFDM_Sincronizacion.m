@@ -82,28 +82,47 @@ Hest_pi_ideal = Ypre_pi_ideal ./ Xpre_pi;
 eq_ideal = 1 ./ Hest_da_ideal;
 EQ_ideal = repmat(eq_ideal,1,NSimb_ofdm);
 
-%% Bucle SNR
-
-
     %% Canal multicamino
 
     EntradaCanal = SimbOfdm_1;
     senyalCanal = filter(hcanal,1,EntradaCanal);
     senyalCanal = awgn(senyalCanal,SNR,"measured");
-    senyalCanal= [zeros(5,1);senyalCanal(1:end-5)];
+    senyalCanal= [senyalCanal(2:end);0];
+    % Offset ebn freuencia
+    CFO = 1/N*0.05;% 
+    Ls = length(senyalCanal);
+
+    senyalCanal = senyalCanal .* exp(1j*2*pi*CFO*(1:Ls)');
     Salida_Canal = senyalCanal;
 
     %% Preambulo con ruido
 
     Entrenamiento_canal = filter(hcanal,1,preT);
     Entrenamiento_canal = awgn(Entrenamiento_canal,SNR,"measured");
-    Entrenamiento_canal=[zeros(5,1);Entrenamiento_canal(1:end-5)];
+    %Entrenamiento_canal=[zeros(5,1);Entrenamiento_canal(1:end-5)];
+    Entrenamiento_canal= [Entrenamiento_canal(2:end);0];
 
     %% Recepcion
 
     senyalRx = Salida_Canal;
     Senyal_entrenamiento_RX = Entrenamiento_canal;
 
+    %% Sincronizacion Temporal 
+    
+    preT = ref_ofdm(N,Ncp*2,indices_nulos,indices_pilotos);
+    filCOR = conj(preT(end:-1:1));
+
+    trama = [zeros(20,1); preT; zeros(50,1)];
+    
+    salco = filter(filCOR,1,trama); % esto demuestra que hay un pico
+    
+    figure(10)
+    plot(abs(salco))
+
+    % La voy a usar
+
+    senyalRx_sincro_1 = fi
+    
     %% Estimacion del canal con ruido
 
     entrenamiento_RX_1 = Senyal_entrenamiento_RX(2*Ncp+1:2*Ncp+N);

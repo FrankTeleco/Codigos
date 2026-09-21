@@ -6,8 +6,9 @@
 %   4) Multicamino
 %   5) Estimacion del canal y ecualizacion
 %   6) Comparacion EQ ideal vs EQ con ruido
-%   7) Sincronizacion Temporal
-%   8) Sincronizacion Portadora
+%   7) He añadido errores de sincronismo Temporal y offset en frecuencia
+%      para ver sus efectos-
+ 
 
 clc;
 clear;
@@ -90,14 +91,20 @@ EQ_ideal = repmat(eq_ideal,1,NSimb_ofdm);
     EntradaCanal = SimbOfdm_1;
     senyalCanal = filter(hcanal,1,EntradaCanal);
     senyalCanal = awgn(senyalCanal,SNR,"measured");
-    senyalCanal= [zeros(20,1);senyalCanal(1:end-20)];
+    senyalCanal= [senyalCanal(2:end);0];
+    % Offset ebn freuencia
+    CFO = 1/N*0.05;% 
+    Ls = length(senyalCanal);
+
+    senyalCanal = senyalCanal .* exp(1j*2*pi*CFO*(1:Ls)');
     Salida_Canal = senyalCanal;
 
     %% Preambulo con ruido
 
     Entrenamiento_canal = filter(hcanal,1,preT);
     Entrenamiento_canal = awgn(Entrenamiento_canal,SNR,"measured");
-    Entrenamiento_canal=[zeros(4,1);Entrenamiento_canal(1:end-4)];
+    %Entrenamiento_canal=[zeros(5,1);Entrenamiento_canal(1:end-5)];
+    Entrenamiento_canal= [Entrenamiento_canal(2:end);0];
 
     %% Recepcion
 
