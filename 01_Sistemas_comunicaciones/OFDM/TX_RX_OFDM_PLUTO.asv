@@ -1,6 +1,6 @@
 % Simulacion con pluto
 clc; clear; close all;
-% con bits al azar
+
 %% Parametros
 MQAM = 16;
 N= 64;
@@ -8,7 +8,7 @@ Ncp= N/4;
 Ni= 48; % portadoras datos
 Np= 4; % Portadoras pilotos
 Nu= 12; % Portadoras nulas
-Nbits = 10e6;
+Nbits = 1e6;
 Nsimb= ceil(Nbits/(log2(MQAM)*Ni)); % redondeda
 
 %% Generacion de Bits
@@ -43,8 +43,8 @@ SenyalTx=[preT;SimbOfdm_T];
 %% Aqui va el Pluto
 
 fs= 1.5e6;
-fc= 1e9;
-N_muestras = 16e6;
+fc= 2.4e9;
+N_muestras = 416880;
 
 tx= sdrtx("Pluto");
 tx.CenterFrequency= fc;
@@ -66,40 +66,28 @@ transmitRepeat(tx,SenyalTx)
 %------------ Recepcion
 
 %% Senyal recibida
+SenyalRx= zeros(N_muestras,3);
 
-trama_valida = false;
-while ~trama_valida
-
-    % Recibo una captura
-    SenyalRx = rx();
-
-    % Correlación con el preámbulo
-    preT_invertida = conj(preT(end:-1:1));
-    senyalCorrelacion = filter(preT_invertida,1,SenyalRx);
-
-    % Pico = última muestra del preámbulo
-    [maximo,posicion] = max(abs(senyalCorrelacion));
-
-    % Comprobar que después del preámbulo están todos los datos
-    if length(SenyalRx) - posicion >= 80*Nsimb
-        trama_valida = true;
-    end
-
+for k= 1: 3
+  
+    SenyalRx(:,k) = rx();
 end
-
-
 SenyalRx=SenyalRx(:);
 %% Sincronizacion Temporal
 
-% preT_invertida = conj(preT(end:-1:1));
-% 
-% senyalCorrelacion = filter(preT_invertida,1,SenyalRx);
-% 
-% [maximo, posicion]= max(abs(senyalCorrelacion)); % Da un pico en la ultima muestra
+preT_invertida = conj(preT(end:-1:1));
+
+senyalCorrelacion = filter(preT_invertida,1,SenyalRx);
+
+[maximo, posicion]= max(abs(senyalCorrelacion)); % Da un pico en la ultima muestra
 
 %plot(abs(senyalCorrelacion));
 
 Simbolos_Entrenamiento = SenyalRx(posicion-2*N+ 1: posicion); % Simbolos sin CP
+E1= Simbolos_Entrenamiento(1:N);
+E2=Simbolos_Entrenamiento(N+1:2*N);
+
+E_promedio= (E1+E2)*0.5;
 
 
 %% Offset en frecuencia
@@ -110,14 +98,9 @@ f_estimada = - 1* angle(z) / (2*pi*N);
 n= 0: length(SenyalRx)-1; n=n.';
 
 % correccion
-Senyal_sincronizada = SenyalRx .* exp(-1j*2*pi*f_estimada*n);
 
-Simbolos_Entrenamiento_corr =Senyal_sincronizada(posicion-2*N+1:posicion);
+Senyal_sincronizada = SenyalRx.* exp(1j*2*pi*f_estimada*n);
 
-E1 = Simbolos_Entrenamiento_corr(1:N);
-E2 = Simbolos_Entrenamiento_corr(N+1:2*N);
-
-E_promedio = (E1+E2)/2;
 %% Extraigo los datos
 
 Datos_Rx= Senyal_sincronizada(posicion+1:(N+Ncp)* Nsimb + posicion);
@@ -134,7 +117,7 @@ h_estimado =Ypre_da./Xpre_da;
 
 H_estimado= repmat(h_estimado,1,Nsimb);
 
-SimbOfdm_R= SimbOfdm_R.* (1./H_estimado); % tiene que ser elemento a elemento
+SimbOfdm_R= SimbOfdm_R* orr1./H_estimado;
 
 %% Seguimiento con piloto
 h_estimado_pi = Ypre_pi ./ Xpre_pi; % Solo pilotos
