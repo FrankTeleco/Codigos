@@ -1,0 +1,294 @@
+% Simulacion con pluto
+clc; clear; close all;
+% con bits al azar
+%% Parametros
+MQAM =64;
+N= 64;
+Ncp= N/2;
+Ni= 48; % portadoras datos
+Np= 4; % Portadoras pilotos
+Nu= 12; % Portadoras nulas
+% Nbits = 1e6;
+% Nsimb= ceil(Nbits/(log2(MQAM)*Ni)); % redondeda
+
+%% Generacion de Bits
+archivo = 'LaBachata.mp3';
+
+[musica, fs] = audioread(archivo);
+
+inicio = 20;      % segundo inicial
+duracion = 10;    % segundos
+
+i0 = floor(inicio*fs) + 1;
+i1 = floor((inicio + duracion)*fs);
+
+fragmento = musica(i0:i1-1,:);
+
+audiowrite('LaBachata_10s.mp3', fragmento, fs);
+
+
+fid = fopen('LaBachata_10s.mp3','rb');
+bytes = fread(fid,Inf,'*uint8');
+fclose(fid);
+
+Bits_T = int2bit(bytes,8,true);
+%Bits_T= Bits_T(1: 16e6);
+Bits_T = Bits_T(:);
+
+
+bitsPorOFDM = Ni*log2(MQAM);
+
+relleno = mod(-length(Bits_T), bitsPorOFDM);
+
+Bits_T = [Bits_T; zeros(relleno,1)];
+
+Nsimb = length(Bits_T)/bitsPorOFDM;
+
+%% Mapeo
+SimbQAM_T = qammod(Bits_T,MQAM,"bin","InputType","bit","UnitAveragePower",true);
+SimbQAM_T= reshape(SimbQAM_T,Ni,[]);
+
+
+%% Generacion con ofdmmod
+DC= N*0.5+1;
+Nyquist= -32 + N*0.5+1;
+indices_nulos= [-32;-31;-30;-29;-28;-27;0;27;28;29;30;31] + N*0.5 +1;
+indices_pilotos=[-21;-7;7;21] + N*0.5 +1;
+indice_datos= setdiff(1:N,[indices_pilotos;indices_nulos]);
+
+%% Generacion de preambulos
+
+[preT,Xpre_da,Xpre_pi] =ref_ofdm(N,2*Ncp,indices_nulos,indices_pilotos);
+
+Pilotos= repmat(Xpre_pi,1,Nsimb);
+
+SimbOfdm_T = ofdmmod(SimbQAM_T,N,Ncp,indices_nulos,indices_pilotos,Pilotos);
+
+%% Senyal TX
+
+SenyalTx=[preT;SimbOfdm_T];
+SenyalTx= SenyalTx/ max(SenyalTx);
+
+%% Aqui va el Pluto
+
+fs= 2e6;
+fc= 1e9;
+N_muestras = 375000;
+
+tx= sdrtx("Pluto");
+tx.CenterFrequency= fc;
+tx.BasebandSampleRate=fs;
+tx.Gain= 0;
+%%%%%%%%
+% rx= sdrrx("Pluto");
+% rx.CenterFrequency=fc;
+% rx.BasebandSampleRate=fs;
+% rx.SamplesPerFrame=N_muestras;
+% rx.OutputDataType="double";
+% rx.GainSource='Manual';
+% rx.Gain= 50;
+% 
+transmitRepeat(tx,SenyalTx)
+
+
+rx = comm.SDRRTLReceiver();
+%%%%%%%%
+
+rx.CenterFrequency=fc;
+rx.SampleRate=fs;
+rx.SamplesPerFrame=N_muestras;
+rx.OutputDataType="double";
+rx.EnableTunerAGC=true;
+
+%SenyalRx = rx();
+% Transmision
+
+%------------ Recepcion
+
+%% Senyal recibida
+
+trama_valida = false;
+while ~trama_valida
+
+    % Recibo una captura
+    SenyalRx = rx();
+
+    % Correlación con el preámbulo
+    preT_invertida = conj(preT(end:-1:1));
+    senyalCorrelacion = filter(preT_invertida,1,SenyalRx);
+
+    % Pico = última muestra del preámbulo
+    [maximo,posicion] = max(abs(senyalCorrelacion));
+
+    % Comprobar que después del preámbulo están todos los datos
+    if length(SenyalRx) - posicion >= 80*Nsimb
+        trama_valida = true;
+    end
+
+end
+
+
+SenyalRx=SenyalRx(:);
+%% Sincronizacion Temporal
+
+% preT_invertida = conj(preT(end:-1:1));
+% 
+% senyalCorrelacion = filter(preT_invertida,1,SenyalRx);
+% 
+% [maximo, posicion]= max(abs(senyalCorrelacion)); % Da un pico en la ultima muestra
+
+%plot(abs(senyalCorrelacion));
+
+Simbolos_Entrenamiento = SenyalRx(posicion-2*N+ 1: posicion); % Simbolos sin CP
+
+
+%% Offset en frecuencia
+
+z= sum(Simbolos_Entrenamiento(1:N).*conj(Simbolos_Entrenamiento(N+1:end)));
+
+f_estimada = - 1* angle(z) / (2*pi*N);
+n= 0: length(SenyalRx)-1; n=n.';
+
+% correccion
+Senyal_sincronizada = SenyalRx .* exp(-1j*2*pi*f_estimada*n);
+
+Simbolos_Entrenamiento_corr =Senyal_sincronizada(posicion-2*N+1:posicion);
+
+E1 = Simbolos_Entrenamiento_corr(1:N);
+E2 = Simbolos_Entrenamiento_corr(N+1:2*N);
+
+E_promedio = (E1+E2)/2;
+%% Extraigo los datoslo que pasa 
+
+Datos_Rx= Senyal_sincronizada(posicion+1:(N+Ncp)* Nsimb + posicion);
+
+%% Decodifico el OFDM
+
+[SimbOfdm_R,Ypre_pi_datos] = ofdmdemod(Datos_Rx,N,Ncp,Ncp,indices_nulos,indices_pilotos);
+
+%% sincronizo
+
+[Ypre_da,Ypre_pi] = ofdmdemod(E_promedio,N,0,0,indices_nulos,indices_pilotos);
+
+h_estimado =Ypre_da./Xpre_da;
+
+H_estimado= repmat(h_estimado,1,Nsimb);
+
+SimbOfdm_R= SimbOfdm_R.* (1./H_estimado); % tiene que ser elemento a elemento
+
+%% Seguimiento con piloto
+h_estimado_pi = Ypre_pi ./ Xpre_pi; % Solo pilotos
+H_estimado_pi = repmat(h_estimado_pi,1,Nsimb);
+
+Pilotos_T = Pilotos .* H_estimado_pi;
+
+offset_seguimiento = angle(sum(Ypre_pi_datos .* conj(Pilotos_T)));
+
+exp_CFO = repmat(exp(-1j*offset_seguimiento),Ni,1);
+
+SimbOfdm_R = SimbOfdm_R .* exp_CFO;
+
+%% Decodifico QAM
+
+Bits_R = qamdemod(SimbOfdm_R,MQAM,"bin","OutputType","bit","UnitAveragePower",true);
+Bits_R= Bits_R(:);
+
+
+%%
+bytes_R = bit2int(Bits_R,8,true);
+
+fid = fopen('cancion_recuperada_2.mp3','wb');
+fwrite(fid,bytes_R,'uint8');
+fclose(fid);
+
+
+[erro,Ber] = biterr(Bits_T,Bits_R)
+
+
+scatterplot(SimbOfdm_R(:))
+% Demodular las dos copias por separado
+[Y1_da,~] = ofdmdemod(E1,N,0,0,indices_nulos,indices_pilotos);
+[Y2_da,~] = ofdmdemod(E2,N,0,0,indices_nulos,indices_pilotos);
+
+% Estimar canal con la primera copia
+H1 = Y1_da ./ Xpre_da;
+
+% Señal esperada en la segunda copia
+Y2_est = H1 .* Xpre_da;
+
+% Error
+error = Y2_da - Y2_est;
+
+% SNR por subportadora
+SNR_sub = abs(Y2_est).^2 ./ abs(error).^2;
+SNRdB_sub = 10*log10(SNR_sub);
+
+% Gráfica
+figure;
+stem(1:length(SNRdB_sub),SNRdB_sub);
+grid on;
+xlabel('Subportadora de datos');
+ylabel('SNR estimada [dB]');
+title('SNR estimada por subportadora');
+
+DeltaF = fs/N;
+
+SNRlin = 10.^(SNRdB_sub/10);
+
+Capacidad_sub = DeltaF .* log2(1 + SNRlin);   % bit/s
+
+figure;
+stem(1:length(Capacidad_sub), Capacidad_sub/1e3, 'filled');
+grid on;
+xlabel('Subportadora de datos');
+ylabel('Capacidad de Shannon [kb/s]');
+title('Capacidad teórica por subportadora');
+% Ancho de cada subportadora
+DeltaF = fs/N;
+
+% SNR a escala lineal
+SNRlin = 10.^(SNRdB_sub/10);
+
+% Capacidad Shannon por subportadora
+Capacidad_sub = DeltaF .* log2(1 + SNRlin);
+
+% Rb real de cada subportadora de datos
+Rb_sub = log2(MQAM) * fs/(N + Ncp);
+
+Rb_vector = repmat(Rb_sub,length(SNRdB_sub),1);
+
+% Margen
+Margen = Capacidad_sub(:) - Rb_vector;
+
+% Tabla
+Tabla = table( ...
+    (1:length(SNRdB_sub)).', ...
+    SNRdB_sub(:), ...
+    Rb_vector/1e3, ...
+    Capacidad_sub(:)/1e3, ...
+    Margen/1e3, ...
+    'VariableNames', ...
+    {'Subportadora','SNR_dB','Rb_kbps','Capacidad_kbps','Margen_kbps'});
+
+disp(Tabla)
+
+[y,fs] = audioread('cancion_recuperada_2.mp3');
+sound(y,fs);
+
+%% Funcion preambulo
+function [preT,Xpre_da,Xpre_pi] =  ref_ofdm(Nfft,Ncp,I_nu,I_pi)
+
+rng(35)
+
+Npi = length(I_pi);
+Nda = Nfft-Npi-length(I_nu);
+
+Xpre_da = randi([0 1],Nda,1)*2-1;
+
+Xpre_pi = randi([0 1],Npi,1)*2-1;
+
+ref = ofdmmod(Xpre_da,Nfft,Ncp,I_nu,I_pi,Xpre_pi);
+
+preT = [ref;ref(end-Nfft+1:end)];
+
+end
